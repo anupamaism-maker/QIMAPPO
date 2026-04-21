@@ -1,80 +1,137 @@
-import sys, os, numpy as np
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config         import Config
-from utils.plotter  import plot_all, plot_scalability
-from utils.logger   import Logger
+import numpy as np
+import matplotlib.pyplot as plt
 
 
-def load_history(path):
-    try:
-        return np.load(path, allow_pickle=True).item()
-    except FileNotFoundError:
-        print(f"[Warning] {path} not found — skipping.")
-        return None
+def smooth(data, window=None):
+    """
+    Moving average smoothing (adaptive)
+    """
+    data = np.array(data, dtype=float)
+
+    if len(data) < 5:
+        return data
+
+    if window is None:
+        window = max(5, len(data) // 20)
+
+    if len(data) < window:
+        return data
+
+    kernel = np.ones(window) / window
+    return np.convolve(data, kernel, mode='valid')
 
 
-def print_table(histories):
-    """Print final results table (Table VI equivalent)."""
-    print("\n" + "="*70)
-    print(f"{'Method':<15} {'Reward':>10} {'EE(Mbit/kJ)':>13} {'Deadline%':>11}")
-    print("-"*70)
-    for name, h in histories.items():
-        r = h['reward'][-1]
-        e = h['energy_eff'][-1]
-        d = h['deadline_sat'][-1]
-        print(f"{name:<15} {r:>10.2f} {e:>13.3f} {d:>11.1f}")
-    print("="*70)
+def plot_metric(histories, key, title, ylabel):
+    """
+    Plot a metric dynamically from histories
+    """
+
+    plt.figure()
+
+    for algo, hist in histories.items():
+
+        if key not in hist:
+            print(f"[WARN] {algo} missing '{key}', skipping")
+            continue
+
+        values = np.array(hist[key], dtype=float)
+
+        if len(values) == 0:
+            continue
+
+        smoothed = smooth(values)
+
+        x = np.arange(len(smoothed))
+
+        plt.plot(x, smoothed, label=algo)
+
+    plt.title(title)
+    plt.xlabel("Episodes")
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.grid(True)
 
 
-def main():
-    cfg = Config()
-
-    histories = {}
-    files = {
-        'QI-MAPPO':  f"{cfg.CSV_DIR}/qi_mappo_history.npy",
-        'SFS-MAPPO': f"{cfg.CSV_DIR}/sfs_mappo_history.npy",
-        'MAPPO':     f"{cfg.CSV_DIR}/mappo_history.npy",
-        'MADDQN':    f"{cfg.CSV_DIR}/maddqn_history.npy",
-    }
-    for name, path in files.items():
-        h = load_history(path)
-        if h: histories[name] = h
+def compare_all(histories):
+    """
+    Automatically detect and plot all metrics
+    """
 
     if not histories:
-        print("[compare.py] No training history found.")
-        print("  Run: python train.py && python train_baselines.py first.")
+        print("[ERROR] Empty histories")
         return
 
-    print_table(histories)
+    # detect all keys across all algorithms
+    all_keys = set()
+    for hist in histories.values():
+        all_keys.update(hist.keys())
 
-    print("\nGenerating figures...")
-    plot_all(histories, out_dir=cfg.FIGURES_DIR)
+    print(f"[INFO] Metrics detected: {list(all_keys)}")
 
-    scalability = {
-        '500×500': {
-            'QI-MAPPO':  [6.00, 5.61, 5.22],
-            'SFS-MAPPO': [5.00, 4.70, 4.40],
-            'MAPPO':     [4.00, 3.70, 3.40],
-            'MADDQN':    [3.00, 2.80, 2.60],
-        },
-        '750×750': {
-            'QI-MAPPO':  [5.85, 5.48, 5.10],
-            'SFS-MAPPO': [4.90, 4.55, 4.20],
-            'MAPPO':     [3.90, 3.60, 3.30],
-            'MADDQN':    [2.90, 2.70, 2.50],
-        },
-        '1000×1000': {
-            'QI-MAPPO':  [5.70, 5.35, 4.98],
-            'SFS-MAPPO': [4.80, 4.40, 4.10],
-            'MAPPO':     [3.80, 3.50, 3.20],
-            'MADDQN':    [2.80, 2.60, 2.40],
-        },
+    titles = {
+        "rewards": ("Reward Comparison", "Total Reward"),
+        "actor_loss": ("Actor Loss", "Loss"),
+        "critic_loss": ("Critic Loss", "Loss"),
+        "energy": ("Energy Consumption", "Energy"),
+        "delay": ("Delay", "Time"),
+        "throughput": ("Throughput", "Rate"),
     }
-    plot_scalability(scalability, out_dir=cfg.FIGURES_DIR)
 
-    print(f"\nAll outputs saved to {cfg.FIGURES_DIR}/")
+    for key in all_keys:
+        title, ylabel = titles.get(
+            key, (f"{key} Comparison", key)
+        )
+        plot_metric(histories, key, title, ylabel)
+
+    plt.show()
 
 
-if __name__ == "__main__":
-    main()
+def print_summary(histories):
+    """
+    Print real computed statistics
+    """
+
+    print("\n" + "="*60)
+    print("FINAL PERFORMANCE SUMMARY (Computed from Training Data)")
+    print("="*60)
+
+    for algo, hist in histories.items():
+        print(f"\n--- {algo} ---")
+
+        for key, values in hist.items():
+
+            values = np.array(values, dtype=float)
+
+            if len(values) == 0:
+                continue
+
+            mean_val = np.mean(values)
+            std_val = np.std(values)
+            max_val = np.max(values)
+            min_val = np.min(values)
+            last_val = values[-1]
+
+            print(f"{key}:")
+            print(f"  Mean : {mean_val:.4f}")
+            print(f"  Std  : {std_val:.4f}")
+            print(f"  Max  : {max_val:.4f}")
+            print(f"  Min  : {min_val:.4f}")
+            print(f"  Last : {last_val:.4f}")
+
+
+def save_results(histories, filename="results.npy"):
+    """
+    Save real experiment results
+    """
+    np.save(filename, histories)
+    print(f"[INFO] Results saved to {filename}")
+
+
+def load_results(filename="results.npy"):
+    """
+    Load previously saved results
+    """
+    data = np.load(filename, allow_pickle=True).item()
+    print(f"[INFO] Results loaded from {filename}")
+    return data
